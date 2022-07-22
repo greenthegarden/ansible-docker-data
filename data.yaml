@@ -83,6 +83,7 @@
             - 4369:4369
             - 5369:5369
             - 6000-6100:6000-6100
+          restart: true
           restart_policy: unless-stopped
           state: started
           volumes:

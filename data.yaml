@@ -1,0 +1,107 @@
+---
+- name: Configure utility services
+
+  hosts: localhost
+
+  vars:
+
+  pre_tasks:
+
+    - name: Check for dependent python modules
+      community.general.python_requirements_info:
+        dependencies:
+          - docker>=5.0.0
+      tags:
+        - always
+
+  tasks:
+
+    ####### DATA NETWORK SECTION
+
+    - name: Set Data Network facts
+      ansible.builtin.set_fact:
+        data_network_name: data-network
+
+    - name: Create a Data Network
+      community.docker.docker_network:
+        name: "{{ data_network_name | default('data-network') }}"
+        internal: false
+
+    ####### EMQX SECTION
+
+    # https://hub.docker.com/r/emqx/emqx
+    # https://github.com/iotblue/emqx-docker
+
+    - name: Set EMQX facts
+      ansible.builtin.set_fact:
+        emqx_image_name: emqx/emqx
+        emqx_image_tag: 'latest' # '5.0.3'
+        emqx_container_name: emqx
+        emqx_container_port_api: 18083
+        emqx_container_port_mqtt: 1883
+      tags:
+        - emqx
+
+    - name: Check if EMQX is running
+      community.docker.docker_container_info:
+        name: "{{ emqx_container_name }}"
+      register: emqx_state
+      tags:
+        - emqx
+      
+    - block:
+
+      - name: Pull EMQX image
+        community.docker.docker_image:
+          name: "{{ emqx_image_name | default('emqx/emqx') }}:{{ emqx_image_tag | default('latest') }}"
+          source: pull
+        tags:
+          - emqx
+          - stable
+
+      - name: Start EMQX
+        community.docker.docker_container:
+          name: "{{ emqx_container_name | default('emqx') }}"
+          image: "{{ emqx_image_name | default('emqx/emqx') }}:{{ emqx_image_tag | default('latest') }}"
+          detach: true
+          env:
+            EMQX_ALLOW_ANONYMOUS: "true"
+            # EMQX_CLUSTER__DISCOVERY: "static"
+            # EMQX_CLUSTER__STATIC__SEEDS: "emqx@192.168.1.186, emqx@192.168.1.50"
+            EMQX_LISTENER__TCP__EXTERNAL: "1883"
+            # EMQX_LOADED_PLUGINS: "emqx_recon,emqx_retainer,emqx_management,emqx_dashboard,emqx_prometheus"
+            # EMQX_LOG__LEVEL: debug
+            EMQX_NAME: "{{ emqx_container_name | default('emqx') }}"
+            EMQX_HOST: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
+            # EMQX_PROMETHEUS__PUSH__GATEWAY__SERVER: "pushgateway"
+            # EMQX_PROMETHEUS__INTERVAL: "15000"
+            WAIT_FOR_ERLANG: "60"
+          # network_mode: host
+          published_ports:
+            - "{{ emqx_container_port_api | default('18083') }}:18083"
+            - "{{ emqx_container_port_mqtt | default('1883') }}:1883"
+            - 4369:4369
+            - 5369:5369
+            - 6000-6100:6000-6100
+          restart_policy: unless-stopped
+          state: started
+          volumes:
+            - /etc/localtime:/etc/localtime:ro
+        tags:
+          - emqx
+
+      - name: Wait for EMQX to accept connections
+        ansible.builtin.wait_for:
+          host: "{{ hostvars[inventory_hostname]['ansible_default_ipv4']['address'] }}"
+          port: "{{ emqx_container_port_api | default(18083) }}"
+          connect_timeout: 1
+          delay: 10
+          state: started
+          timeout: 30
+        register: emqx_running
+        until: emqx_running is success
+        retries: 10
+        tags:
+          - emqx
+
+      when: not emqx_state.exists
